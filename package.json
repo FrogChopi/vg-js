@@ -1,0 +1,21 @@
+{
+  "name": "vg-js",
+  "version": "1.0.0",
+  "description": "Cardfight Vanguard D simulator with AI",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "mocha --require @babel/register --recursive test/main.test.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@babel/core": "^7.28.5",
+    "@babel/preset-env": "^7.28.5",
+    "@babel/register": "^7.28.3",
+    "chai": "^6.2.0",
+    "mocha": "^11.7.5"
+  }
+}
