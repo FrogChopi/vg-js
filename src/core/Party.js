@@ -1,7 +1,7 @@
 
-import { getPossibleActions } from '../ActionManager.js';
-import { applyAction } from '../ActionApplier.js';
-import Board from './core/Board.js';
+import { getPossibleActions } from './ActionManager.js';
+import { applyAction } from './ActionApplier.js';
+import Board from './Board.js';
 
 /**
  * Manages the game flow, turns, and history between two players.
