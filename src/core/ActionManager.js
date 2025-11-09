@@ -4,7 +4,7 @@
  * The core idea is to have pure functions that take a state and return a list of
  * possible next actions, without modifying the original state.
  */
-import { evaluateCondition } from './ConditionEvaluator.js';
+import { evaluateCondition } from './core/ConditionEvaluator.js';
 
 /**
  * Generates all possible "call" actions from the hand to the board.

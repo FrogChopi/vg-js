@@ -1,4 +1,4 @@
-import Circle from './Circle.js';
+import Circle from './core/Circle.js';
 
 export default class Board {
     /**

@@ -1,12 +1,12 @@
 import fs from 'fs';
 import path from 'path';
 import * as readline from 'node:readline/promises';
-import Party from './Party.js';
-import Card from './Card.js';
-import { getPossibleActions } from './ActionManager.js';
-import { applyAction, applyCloseStep } from './ActionApplier.js';
-import { effects as effectLibrary } from './EffectLibrary.js';
-import { evaluateCondition } from './ConditionEvaluator.js';
+import Party from './core/Party.js';
+import Card from './core/Card.js';
+import { getPossibleActions } from './core/ActionManager.js';
+import { applyAction, applyCloseStep } from './core/ActionApplier.js';
+import { effects as effectLibrary } from './core/EffectLibrary.js';
+import { evaluateCondition } from './core/ConditionEvaluator.js';
 
 /**
  * Helper function to parse strings like "Power 10000" or "Shield 5000".
