@@ -4,6 +4,7 @@
  * The core idea is to have pure functions that take a state and return a list of
  * possible next actions, without modifying the original state.
  */
+import { evaluateCondition } from './ConditionEvaluator.js';
 
 /**
  * Generates all possible "call" actions from the hand to the board.
@@ -69,6 +70,47 @@ function getMoveActions(gameState, activePlayer) {
         }
     }
 
+    return actions;
+}
+
+/**
+ * Generates all possible "ACT" (activatable skill) actions.
+ * @param {object} gameState - The current state of the game.
+ * @param {object} activePlayer - The player object for the active player.
+ * @returns {object[]} A list of possible ACT actions.
+ */
+function getActActions(gameState, activePlayer) {
+    const actions = [];
+    // Scan all zones where ACT skills can be used (board, crest zone, etc.)
+    const cardsWithPotentialActs = [
+        ...activePlayer.board.frontRow.map(c => c.unit),
+        ...activePlayer.board.backRow.map(c => c.unit),
+        ...activePlayer.crestZone,
+    ].filter(Boolean);
+
+    for (const card of cardsWithPotentialActs) {
+        if (card.effectsData?.implemented_effects) {
+            for (const effect of card.effectsData.implemented_effects) {
+                if (effect.is_act) {
+                    // Check if the effect has already been used this turn if it's 1/Turn
+                    if (effect.once_per_turn && activePlayer.usedTurnlyEffects.includes(effect.function_index)) {
+                        continue;
+                    }
+                    // Check if the condition for the ACT skill is met
+                    if (!evaluateCondition(effect.condition, gameState)) {
+                        continue;
+                    }
+
+                    actions.push({
+                        type: 'ACT',
+                        cardId: card.id,
+                        effect: effect,
+                        description: effect.description || `Activate skill of ${card.name}`
+                    });
+                }
+            }
+        }
+    }
     return actions;
 }
 
@@ -177,11 +219,13 @@ function getMainPhaseActions(gameState) {
     
     const callActions = getCallActions(gameState, activePlayer);
     const moveActions = getMoveActions(gameState, activePlayer);
+    const actActions = getActActions(gameState, activePlayer);
     // const skillActions = getSkillActions(gameState, activePlayground); // To be implemented
 
     const actions = [
         ...callActions,
         ...moveActions,
+        ...actActions,
         // ...skillActions
     ];
 
@@ -287,6 +331,8 @@ export function getPossibleActions(gameState) {
             return getRideActions(gameState, activePlayer);
         case 'main':
             return getMainPhaseActions(gameState);
+        case 'act': // ACT is part of main phase, handled by getMainPhaseActions
+            return [];
         case 'battle':
             return getBattlePhaseActions(gameState);
         case 'guard':

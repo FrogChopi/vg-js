@@ -7,7 +7,8 @@ export default class Card {
         critical = 1,
         shield = 0,
         skills = [], // e.g., ['Boost', 'Intercept']
-        effects = [], // e.g., [{type: 'AUTO', event: 'ON_CALL', cost: '...', effect: '...'}]
+        effects = [], // Raw effect text
+        effectsData = {}, // Raw data from JSON, including implemented_effects
         trigger = null, // e.g., 'Heal', 'Critical'
         nation,
         clan,
@@ -21,6 +22,7 @@ export default class Card {
         this.shield = shield;
         this.skills = skills;
         this.effects = effects;
+        this.effectsData = effectsData;
         this.trigger = trigger;
         this.nation = nation;
         this.clan = clan;

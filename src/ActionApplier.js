@@ -150,6 +150,35 @@ function applyIntercept(gameState, action) {
 }
 
 /**
+ * Applies an 'ACT' action to the game state.
+ * @param {Party} gameState - The current game state.
+ * @param {object} action - The ACT action object.
+ * @returns {Party} The new game state after the action.
+ */
+async function applyAct(gameState, action, rl) {
+    const newGameState = cloneDeep(gameState);
+    const activePlayer = newGameState.players[newGameState.currentPlayerIndex];
+    const { effect } = action;
+
+    // Check if player can pay the cost
+    if (effect.cost?.energy && activePlayer.energy < effect.cost.energy) {
+        console.log(`> Cannot activate: not enough energy.`);
+        return gameState; // Return original state if cost cannot be paid
+    }
+
+    // Mark as used if it's a 1/Turn effect
+    if (effect.once_per_turn) {
+        activePlayer.usedTurnlyEffects.push(effect.function_index);
+    }
+
+    // Execute the effect function
+    const effectFunction = effectLibrary[effect.function_index];
+    await effectFunction(newGameState, {}, rl);
+
+    return newGameState;
+}
+
+/**
  * Applies an 'ATTACK' action to the game state.
  * @param {Party} gameState - The current game state.
  * @param {object} action - The ATTACK action object.
@@ -288,6 +317,12 @@ function applyRide(gameState, action) {
     const vanguardCircle = activePlayer.board.getCircle('V');
     if (vanguardCircle.unit) {
         activePlayer.soul.push(vanguardCircle.unit); // Move current vanguard to soul
+
+        // Push the ON_RIDE event to the queue
+        newGameState.eventQueue.push({
+            type: 'ON_RIDE',
+            target: [vanguardCircle.unit, cardToRide] // [card ridden upon, new card]
+        });
     }
     vanguardCircle.unit = cardToRide; // Place new card as vanguard
 
@@ -322,6 +357,8 @@ export async function applyAction(gameState, action, rl) {
             return applyPassRidePhase(gameState);
         case 'CALL':
             return applyCall(gameState, action);
+        case 'ACT':
+            return await applyAct(gameState, action, rl);
         case 'MOVE':
             return applyMove(gameState, action);
         case 'ATTACK':

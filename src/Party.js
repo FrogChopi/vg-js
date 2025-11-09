@@ -16,6 +16,7 @@ class Party {
     this.currentPlayerIndex = 0; // 0 for player 1, 1 for player 2
     this.phase = 'setup'; // e.g., setup, mulligan, stand, draw, ride, main, battle, end
     this.currentBattle = null; // To store info about the current battle
+    this.eventQueue = []; // To process game events and trigger effects
     this.history = []; // To store actions taken
   }
 
@@ -35,7 +36,12 @@ class Party {
       bindZone: [],
       guardianZone: [],
       triggerZone: [],
+      crestZone: [],
       orderZone: [],
+      energy: 0,
+      maxEnergy: 3,
+      continuousEffects: [],
+      usedTurnlyEffects: [],
     };
   }
 
@@ -200,8 +206,10 @@ class Party {
     const separator = '-'.repeat(70);
 
     // --- Player 2 (Opponent) Info ---
+    const p2Crests = player2.crestZone.length > 0 ? `, crests: [${player2.crestZone.map(c => c.name).join(', ')}]` : '';
+    const p2Energy = `, energy: ${player2.energy}`;
     const p2Hand = `hand: [${player2.hand.map(() => '<hidden>').join(', ')}]`;
-    const p2Info = `Player ${p2Index + 1} : ${p2Hand}, drop: ${player2.dropZone.length}, soul: ${player2.soul.length}, deck: ${player2.deck.length}, ride: ${player2.rideDeck.length}, damage: ${player2.damageZone.length}`;
+    const p2Info = `Player ${p2Index + 1} : ${p2Hand}, drop: ${player2.dropZone.length}, soul: ${player2.soul.length}, deck: ${player2.deck.length}, ride: ${player2.rideDeck.length}, damage: ${player2.damageZone.length}${p2Crests}${p2Energy}`;
     console.log(separator);
     console.log(p2Info);
     console.log(separator);
@@ -215,8 +223,10 @@ class Party {
     player1.board.print(true); // `sens = true` for current player's view (bottom)
 
     // --- Player 1 (Current Player) Info ---
+    const p1Crests = player1.crestZone.length > 0 ? `, crests: [${player1.crestZone.map(c => c.name).join(', ')}]` : '';
+    const p1Energy = `, energy: ${player1.energy}`;
     const p1Hand = `hand: [${player1.hand.map(c => `[G${c.grade}] ${c.name}`).join(', ')}]`;
-    const p1Info = `Player ${p1Index + 1} : ${p1Hand}, drop: ${player1.dropZone.length}, soul: ${player1.soul.length}, deck: ${player1.deck.length}, ride: ${player1.rideDeck.length}, damage: ${player1.damageZone.length}`;
+    const p1Info = `Player ${p1Index + 1} : ${p1Hand}, drop: ${player1.dropZone.length}, soul: ${player1.soul.length}, deck: ${player1.deck.length}, ride: ${player1.rideDeck.length}, damage: ${player1.damageZone.length}${p1Crests}${p1Energy}`;
     console.log(separator);
     console.log(p1Info);
     console.log(separator);
@@ -228,6 +238,10 @@ class Party {
 
   nextTurn() {
     this.turn++;
+    // Reset once-per-turn effects for both players at the start of a new turn cycle (Player 1's turn)
+    if (this.currentPlayerIndex === 1) {
+        this.players.forEach(p => p.usedTurnlyEffects = []);
+    }
   }
 
   switchPlayer() {

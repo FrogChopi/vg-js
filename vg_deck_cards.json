@@ -253,7 +253,8 @@
     "implemented_effects": [
       {
         "trigger": "on_ride",
-        "function_index": 5
+        "condition": [ "player.index", "===", 1 ],
+        "function_index": 0
       }
     ]
   },
@@ -364,7 +365,8 @@
     "implemented_effects": [
       {
         "trigger": "on_ride",
-        "function_index": 5
+        "condition": [ "player.index", "===", 1 ],
+        "function_index": 0
       }
     ]
   },
@@ -727,16 +729,31 @@
     "image_path": "img\\DZ-TD01_005EN.png",
     "implemented_effects": [
       {
-        "trigger": "ON_RIDE",
-        "effect_id": "EFFECT_ENERGY_CREST_ON_RIDE"
+        "trigger": "on_ride",
+        "zone": "rideDeck",
+        "mandatory": true,
+        "function_index": 1
       },
       {
-        "trigger": "ON_RIDE_PHASE_START",
-        "effect_id": "EFFECT_ENERGY_CREST_RIDE_PHASE"
+        "trigger": "on_ride_phase_start",
+        "zone": "crestZone",
+        "mandatory": true,
+        "function_index": 2
       },
       {
         "is_act": true,
-        "effect_id": "EFFECT_ENERGY_CREST_ACT"
+        "zone": "crestZone",
+        "cost": {
+          "energy": 7
+        },
+        "once_per_turn": true,
+        "description": "[ACT] [1/Turn]: [COST][Energy-Blast 7], and draw a card.",
+        "condition": [
+          "player.energy",
+          ">=",
+          7
+        ],
+        "function_index": 3
       }
     ]
   }

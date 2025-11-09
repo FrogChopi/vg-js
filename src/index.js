@@ -5,6 +5,8 @@ import Party from './Party.js';
 import Card from './Card.js';
 import { getPossibleActions } from './ActionManager.js';
 import { applyAction, applyCloseStep } from './ActionApplier.js';
+import { effects as effectLibrary } from './EffectLibrary.js';
+import { evaluateCondition } from './ConditionEvaluator.js';
 
 /**
  * Helper function to parse strings like "Power 10000" or "Shield 5000".
@@ -74,13 +76,17 @@ function parseDeck(deckContent, cardDatabase) {
                         shield: parseValue(cardData.shield) ?? 0,
                         skills: cardData.skill ? cardData.skill.split(', ').filter(s => s !== '-') : [],
                         effects: cardData.effect ? [cardData.effect] : [], // Storing raw effect string for now
+                        effectsData: { implemented_effects: cardData.implemented_effects ?? [] },
                         trigger: cardData.gift?.split(' ')[0] ?? null, // e.g., "Heal" from "Heal Trigger +10000"
                         nation: cardData.nation ?? null,
                         race: cardData.race ?? null,
                     } : { name, id: cardId };
                     
                     // Cards with type 'Crest' are not units and should not be in decks.
-                    if (cardData?.type === 'Crest') continue;
+                    if (cardData?.type === 'Crest') {
+                        if (currentDeck === rideDeck) rideDeck.push(new Card(fullCardData, 0));
+                        continue; // Do not add Crests to main deck or process them further as units
+                    }
 
                     currentDeck.push(new Card(fullCardData, drive));
                 }
@@ -92,6 +98,112 @@ function parseDeck(deckContent, cardDatabase) {
     rideDeck.sort((a, b) => (a.grade ?? 99) - (b.grade ?? 99));
 
     return { rideDeck, mainDeck };
+}
+
+/**
+ * Processes the event queue in the game state, triggering card effects.
+ * @param {Party} currentPartyState - The current state of the game.
+ * @returns {Promise<Party>} The new game state after all effects are resolved.
+ */
+async function processEventQueue(currentPartyState, rl) {
+    let party = currentPartyState;
+
+    while (party.eventQueue.length > 0) {
+        const event = party.eventQueue.shift(); // Get the first event
+        console.log(`> Processing event: ${event.type}`);
+
+        const pendingEffects = [];
+        const eventTriggerName = event.type.toLowerCase(); // e.g., 'on_ride'
+
+        // --- 1. Collect all triggered effects for this event ---
+        // This is the "Observer" part. It scans all relevant zones for cards
+        // that might react to the current event.
+        const player = party.players[party.currentPlayerIndex];
+        const opponent = party.players[1 - party.currentPlayerIndex];
+
+        const allCardsInPlay = [
+            ...player.board.frontRow.map(c => ({ card: c.unit, zone: 'board' })),
+            ...player.board.backRow.map(c => ({ card: c.unit, zone: 'board' })),
+            ...player.rideDeck.map(c => ({ card: c, zone: 'rideDeck' })),
+            ...player.crestZone.map(c => ({ card: c, zone: 'crestZone' })),
+            ...player.soul.map(c => ({ card: c, zone: 'soul' })),
+            // Add opponent's cards if effects can trigger on opponent's turn
+        ].filter(item => item.card);
+
+        for (const { card, zone } of allCardsInPlay) {
+            if (card.effectsData?.implemented_effects) {
+                for (const effect of card.effectsData.implemented_effects) {
+                    // Check trigger type
+                    if (effect.trigger !== eventTriggerName) continue;
+
+                    // Check zone if specified. If not, default to board/crest.
+                    if (effect.zone && effect.zone !== zone) continue;
+
+                    // Check condition
+                    if (!evaluateCondition(effect.condition, party)) continue;
+
+                    // All checks passed, add to the effect queue
+                    pendingEffects.push({
+                        cardName: card.name,
+                        cardId: card.id,
+                        effect: effect,
+                        eventPayload: event
+                    });
+                }
+            }
+        }
+
+        // --- 2. Interactively resolve collected effects ---
+        while (pendingEffects.length > 0) {
+            const mandatoryEffects = pendingEffects.filter(p => p.effect.mandatory);
+            const optionalEffects = pendingEffects.filter(p => !p.effect.mandatory);
+
+            let chosenEffect = null;
+            let choiceIndex = -1;
+
+            if (mandatoryEffects.length > 0) {
+                console.log(`\n--- Mandatory Effects for Player ${party.currentPlayerIndex + 1} ---`);
+                mandatoryEffects.forEach((pending, index) => {
+                    console.log(`  ${index}: Activate effect of ${pending.cardName}`);
+                });
+
+                let choice = '0';
+                if (mandatoryEffects.length > 1) {
+                    const answer = await rl.question('Choose which mandatory effect to resolve first: ');
+                    choice = answer;
+                }
+                choiceIndex = parseInt(choice, 10);
+                if (!isNaN(choiceIndex) && choiceIndex >= 0 && choiceIndex < mandatoryEffects.length) {
+                    chosenEffect = mandatoryEffects[choiceIndex];
+                }
+            } else if (optionalEffects.length > 0) {
+                console.log(`\n--- Optional Effects for Player ${party.currentPlayerIndex + 1} ---`);
+                optionalEffects.forEach((pending, index) => {
+                    console.log(`  ${index}: Activate effect of ${pending.cardName}`);
+                });
+                console.log(`  ${optionalEffects.length}: Do not activate an effect`);
+
+                const answer = await rl.question('Choose an option: ');
+                choiceIndex = parseInt(answer, 10);
+                if (!isNaN(choiceIndex) && choiceIndex >= 0 && choiceIndex < optionalEffects.length) {
+                    chosenEffect = optionalEffects[choiceIndex];
+                }
+            }
+
+            if (chosenEffect) {
+                // Remove the chosen effect from the main list and resolve it.
+                const originalIndex = pendingEffects.findIndex(p => p.cardId === chosenEffect.cardId && p.effect.function_index === chosenEffect.effect.function_index);
+                pendingEffects.splice(originalIndex, 1);
+                const effectFunction = effectLibrary[chosenEffect.effect.function_index];
+                await effectFunction(party, chosenEffect.eventPayload, rl);
+            } else {
+                // No effect chosen or no more effects to resolve.
+                break;
+            }
+        }
+    }
+
+    return party;
 }
 
 /**
@@ -126,7 +238,10 @@ async function handleMulliganPhase(currentPartyState, rl) {
     const chosenAction = mulliganActions[choice];
     console.log(`Player ${playerIndex + 1} chose to mulligan ${chosenAction.cardIdsToRedraw.length} card(s).`);
     
-    return applyAction(currentPartyState, chosenAction, rl);
+    let newParty = await applyAction(currentPartyState, chosenAction, rl);
+    newParty = await processEventQueue(newParty, rl);
+
+    return newParty;
 }
 
 /**
@@ -179,15 +294,21 @@ function handleDrawPhase(currentPartyState) {
 async function handleRidePhase(currentPartyState, rl) {
     const playerIndex = currentPartyState.currentPlayerIndex;
     console.log(`\n==== TURN ${currentPartyState.turn} - PLAYER ${playerIndex + 1} - RIDE PHASE ====`);
-    currentPartyState.printState(playerIndex);
 
-    const rideActions = getPossibleActions(currentPartyState);
+    // Trigger ON_RIDE_PHASE_START event
+    let party = currentPartyState;
+    party.eventQueue.push({ type: 'ON_RIDE_PHASE_START' });
+    party = await processEventQueue(party, rl);
+
+    party.printState(playerIndex);
+
+    const rideActions = getPossibleActions(party);
 
     console.log(`\n--- Ride Options for Player ${playerIndex + 1} ---`);
     rideActions.forEach((action, index) => {
         if (action.type === 'RIDE') {
             if (action.source === 'rideDeck') {
-                const cardToDiscard = currentPartyState.players[playerIndex].hand.find(c => c.id === action.discardCardId);
+                const cardToDiscard = party.players[playerIndex].hand.find(c => c.id === action.discardCardId);
                 console.log(`Option ${index}: Ride ${action.cardId} from ${action.source} (discard [G${cardToDiscard.grade}] ${cardToDiscard.name})`);
             } else {
                 console.log(`Option ${index}: Ride ${action.cardId} from ${action.source}`);
@@ -202,7 +323,10 @@ async function handleRidePhase(currentPartyState, rl) {
     // TODO: Add input validation
 
     const chosenAction = rideActions[choice];
-    return applyAction(currentPartyState, chosenAction, rl);
+    let newParty = await applyAction(party, chosenAction, rl);
+    newParty = await processEventQueue(newParty, rl);
+
+    return newParty;
 }
 
 /**
@@ -228,6 +352,8 @@ async function handleMainPhase(currentPartyState, rl) {
                 console.log(`Option ${index}: Call ${action.cardName} to ${action.circleTag}`);
             } else if (action.type === 'MOVE') {
                 console.log(`Option ${index}: ${action.description}`);
+            } else if (action.type === 'ACT') {
+                console.log(`Option ${index}: ${action.description}`);
             } else if (action.type === 'PASS_MAIN_PHASE') {
                 console.log(`Option ${index}: End Main Phase`);
             }
@@ -238,7 +364,9 @@ async function handleMainPhase(currentPartyState, rl) {
         // TODO: Add input validation
 
         const chosenAction = mainActions[choice];
-        party = await applyAction(party, chosenAction, rl);
+        let newParty = await applyAction(party, chosenAction, rl);
+        newParty = await processEventQueue(newParty, rl);
+        party = newParty;
     }
 
     return party;
@@ -276,7 +404,9 @@ async function handleGuardStep(currentPartyState, rl) {
         // TODO: Add input validation
 
         const chosenAction = guardActions[choice];
-        party = await applyAction(party, chosenAction, rl);
+        let newParty = await applyAction(party, chosenAction, rl);
+        newParty = await processEventQueue(newParty, rl);
+        party = newParty;
 
         // If the player chose to stop guarding, the phase will have changed in applyAction.
     }
@@ -317,7 +447,9 @@ async function handleBattlePhase(currentPartyState, rl) {
         const chosenAction = battleActions[choice];
 
         // For now, attack resolution is simple. Guarding and checks will be added later.
-        party = await applyAction(party, chosenAction, rl);
+        let newParty = await applyAction(party, chosenAction, rl);
+        newParty = await processEventQueue(newParty, rl);
+        party = newParty;
 
         if (chosenAction.type === 'ATTACK') {
             console.log(`Attack resolution: ${chosenAction.attacker.name} attacks ${chosenAction.target.name}.`);
@@ -435,7 +567,9 @@ async function main() {
                     }
                     case 'close_step':
                         // This is a new phase to resolve the attack after all checks
-                        party = await applyCloseStep(party, rl);
+                        let newParty = await applyCloseStep(party, rl);
+                        newParty = await processEventQueue(newParty, rl);
+                        party = newParty;
                         // applyCloseStep will set the phase to 'battle' or 'end'
                         break;
                     case 'end':
