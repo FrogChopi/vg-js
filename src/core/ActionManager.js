@@ -26,20 +26,20 @@ function getCallActions(gameState, activePlayer) {
     ];
 
     // For each card in hand, check if it can be called to any available circle
-    for (const card of activePlayer.hand) {
+    activePlayer.hand.forEach((card, index) => {
         // Rule: Can only call units with grade <= vanguard's grade
         // A unit must have power. Cards without power (like Orders) cannot be called.
         if (card.power !== null && card.grade <= vanguardGrade) {
             for (const circle of availableCircles) {
                 actions.push({
                     type: 'CALL',
-                    cardInstanceId: card.uniqueId,
+                    cardIndexInHand: index,
                     cardName: `[G${card.grade}] ${card.name}`, // For clearer display
                     circleTag: circle.name
                 });
             }
         }
-    }
+    });
 
     return actions;
 }
@@ -337,7 +337,12 @@ function getEffectActions(gameState) {
     for (const effectToActivate of optionalEffects) {
         actions.push({
             type: 'ACTIVATE_EFFECT',
-            effectToActivate: effectToActivate,
+            // We only need to store the information required to find the effect again,
+            // not the entire payload which can cause circular references.
+            effectToActivate: {
+                cardId: effectToActivate.cardId,
+                effect: effectToActivate.effect
+            },
             description: `Activate effect of ${effectToActivate.cardName}`
         });
     }

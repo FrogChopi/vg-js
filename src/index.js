@@ -7,84 +7,24 @@ import { getPossibleActions } from './core/ActionManager.js';
 import { applyAction, applyCloseStep } from './core/ActionApplier.js';
 import { effects as effectLibrary } from './core/EffectLibrary.js';
 import { evaluateCondition } from './core/ConditionEvaluator.js';
-import EvaluationEngine from './eval/EvaluationEngine.js';
-import Node from './eval/Node.js';
 import cloneDeep from './core/cloneDeep.js';
 
 /**
  * Helper to get user choice with AI evaluation.
  */
-async function getPlayerChoice(party, rl, actions, isDebug, actionFormatter, engine) {
-    if (isDebug) {
-        console.log('\n--- Evaluating options... ---');
-    }
-    
-    // If the engine's root doesn't match the current state, create a new one.
-    if (!engine || !engine.root || engine.root.state.currentPlayerIndex !== party.currentPlayerIndex) {
-        console.log('> AI tree is being rebuilt for new player turn.');
-        engine.root = new Node(cloneDeep(party));
-    }
+async function getPlayerChoice(party, rl, actions, actionFormatter) {
+    console.log('\n--- Choose an action ---');
 
-    const evaluatedActions = await engine.search(actions);
-    const evalMap = new Map();
-    for (const ev of evaluatedActions) {
-        let key = JSON.stringify(ev.action);
-        // For ride deck actions, we group evaluations by the card being ridden,
-        // as the discard choice can vary but the core action is the same.
-        if (ev.action.type === 'RIDE') {
-            if (ev.action.source === 'rideDeck') {
-                key = `RIDE_DECK_${ev.action.cardId}_DISCARD_${ev.action.discardCardId}`;
-            } else { // source === 'hand'
-                key = `RIDE_HAND_${ev.action.cardId}`;
-            }
-            if (!evalMap.has(key)) {
-                evalMap.set(key, { score: ev.score, depth: ev.depth, gradeScore: ev.gradeScore, damageScore: ev.damageScore });
-            }
-        } else {
-            evalMap.set(key, { score: ev.score, depth: ev.depth, gradeScore: ev.gradeScore, damageScore: ev.damageScore });
-        }
-    }
-
-    // Create a display-friendly, sorted list of actions
-    const displayActions = actions.map((action, originalIndex) => ({
-        action,
-        originalIndex,
-        evaluation: (() => {
-            let key = JSON.stringify(action);
-            if (action.type === 'RIDE') {
-                if (action.source === 'rideDeck') {
-                    key = `RIDE_DECK_${action.cardId}_DISCARD_${action.discardCardId}`;
-                } else { // source === 'hand'
-                    key = `RIDE_HAND_${action.cardId}`;
-                }
-            }
-            return evalMap.get(key);
-        })()
-    })).sort((a, b) => {
-        const scoreA = a.evaluation?.score ?? -Infinity;
-        const scoreB = b.evaluation?.score ?? -Infinity;
-        return scoreB - scoreA;
-    });
-
-    // Display sorted actions
-    displayActions.forEach((displayAction, displayIndex) => {
-        let scoreText = '';
-        if (displayAction.evaluation) {
-            const { score, depth, gradeScore, damageScore } = displayAction.evaluation;
-            scoreText = ` (S: ${score.toFixed(2)}, V: ${depth}, G: ${gradeScore.toFixed(2)}, D: ${damageScore.toFixed(2)})`;
-        }
-        console.log(`Option ${displayIndex}: ${actionFormatter(displayAction.action, displayAction.originalIndex)}${scoreText}`);
+    // Display actions
+    actions.forEach((action, index) => {
+        console.log(`Option ${index}: ${actionFormatter(action, index)}`);
     });
 
     const answer = await rl.question(`\nPlayer ${party.currentPlayerIndex + 1}, choose your action: `);
-    const displayChoice = parseInt(answer, 10);
+    const choice = parseInt(answer, 10);
 
-    // Map the display choice back to the original action index
-    const chosenDisplayAction = displayActions[displayChoice];
-    if (chosenDisplayAction) {
-        // Advance the engine's tree to the chosen state
-        engine.advance(chosenDisplayAction.action);
-        return chosenDisplayAction.originalIndex;
+    if (choice >= 0 && choice < actions.length) {
+        return choice;
     }
     return -1; // Invalid choice
 }
@@ -187,7 +127,7 @@ function parseDeck(deckContent, cardDatabase) {
  * @param {readline.Interface} rl - The readline interface for user input.
  * @returns {Promise<Party>} The new game state after the mulligan.
  */
-async function handleMulliganPhase(currentPartyState, rl, isDebug, engine) {
+async function handleMulliganPhase(currentPartyState, rl) {
     const playerIndex = currentPartyState.currentPlayerIndex;
     console.log(`\n==== TURN ${currentPartyState.turn} - PLAYER ${playerIndex + 1} - MULLIGAN PHASE ====`);
     currentPartyState.printState(playerIndex);
@@ -195,10 +135,10 @@ async function handleMulliganPhase(currentPartyState, rl, isDebug, engine) {
     const mulliganActions = getPossibleActions(currentPartyState);
     const playerHand = currentPartyState.players[playerIndex].hand;
 
-    const choice = await getPlayerChoice(currentPartyState, rl, mulliganActions, isDebug, (action, index) => {
+    const choice = await getPlayerChoice(currentPartyState, rl, mulliganActions, (action, index) => {
         const cardsToRedrawNames = action.cardIndicesToRedraw.map(i => playerHand[i]?.name || 'Unknown Card');
         return `Redraw [${cardsToRedrawNames.join(', ') || 'None'}]`;
-    }, engine);
+    });
 
     const chosenAction = mulliganActions[choice];
     console.log(`Player ${playerIndex + 1} chose to mulligan ${chosenAction.cardIndicesToRedraw.length} card(s).`);
@@ -255,7 +195,7 @@ function handleDrawPhase(currentPartyState) {
  * @param {readline.Interface} rl - The readline interface for user input.
  * @returns {Promise<Party>} The new game state after the ride.
  */
-async function handleRidePhase(currentPartyState, rl, isDebug, engine) {
+async function handleRidePhase(currentPartyState, rl) {
     const playerIndex = currentPartyState.currentPlayerIndex;
     console.log(`\n==== TURN ${currentPartyState.turn} - PLAYER ${playerIndex + 1} - RIDE PHASE ====`);
 
@@ -268,7 +208,7 @@ async function handleRidePhase(currentPartyState, rl, isDebug, engine) {
 
     const rideActions = getPossibleActions(party);
 
-    const choice = await getPlayerChoice(party, rl, rideActions, isDebug, (action, index) => {
+    const choice = await getPlayerChoice(party, rl, rideActions, (action, index) => {
         if (action.type === 'RIDE') {
             if (action.source === 'rideDeck') {
                 const cardToDiscard = party.players[playerIndex].hand.find(c => c.id === action.discardCardId);
@@ -283,7 +223,7 @@ async function handleRidePhase(currentPartyState, rl, isDebug, engine) {
         } else if (action.type === 'PASS_RIDE_PHASE') {
             return `Pass Ride Phase`;
         }
-    }, engine);
+    });
 
     const chosenAction = rideActions[choice];
     const newParty = await applyAction(party, chosenAction, rl);
@@ -298,7 +238,7 @@ async function handleRidePhase(currentPartyState, rl, isDebug, engine) {
  * @param {readline.Interface} rl - The readline interface for user input.
  * @returns {Promise<Party>} The new game state after the main phase.
  */
-async function handleMainPhase(currentPartyState, rl, isDebug, engine) {
+async function handleMainPhase(currentPartyState, rl) {
     let party = currentPartyState;
     const playerIndex = party.currentPlayerIndex;
 
@@ -308,7 +248,7 @@ async function handleMainPhase(currentPartyState, rl, isDebug, engine) {
 
         const mainActions = getPossibleActions(party);
 
-        const choice = await getPlayerChoice(party, rl, mainActions, isDebug, (action, index) => {
+        const choice = await getPlayerChoice(party, rl, mainActions, (action, index) => {
             if (action.type === 'CALL') {
                 return `Call ${action.cardName} to ${action.circleTag}`;
             } else if (action.type === 'MOVE') {
@@ -318,7 +258,7 @@ async function handleMainPhase(currentPartyState, rl, isDebug, engine) {
             } else if (action.type === 'PASS_MAIN_PHASE') {
                 return `End Main Phase`;
             }
-        }, engine);
+        });
 
         const chosenAction = mainActions[choice];
         party = await applyAction(party, chosenAction, rl);
@@ -333,7 +273,7 @@ async function handleMainPhase(currentPartyState, rl, isDebug, engine) {
  * @param {readline.Interface} rl - The readline interface for user input.
  * @returns {Promise<Party>} The new game state after the guard step.
  */
-async function handleGuardStep(currentPartyState, rl, isDebug, engine) {
+async function handleGuardStep(currentPartyState, rl) {
     let party = currentPartyState;
     const defendingPlayerIndex = 1 - party.currentPlayerIndex;
 
@@ -343,7 +283,7 @@ async function handleGuardStep(currentPartyState, rl, isDebug, engine) {
 
         const guardActions = getPossibleActions(party);
 
-        const choice = await getPlayerChoice(party, rl, guardActions, isDebug, (action, index) => {
+        const choice = await getPlayerChoice(party, rl, guardActions, (action, index) => {
             if (action.type === 'GUARD') {
                 return `Guard with ${action.cardName} (Shield: ${action.shield})`;
             } else if (action.type === 'INTERCEPT') {
@@ -351,7 +291,7 @@ async function handleGuardStep(currentPartyState, rl, isDebug, engine) {
             } else if (action.type === 'PASS_GUARD_STEP') {
                 return `Finish Guarding`;
             }
-        }, engine);
+        });
 
         const chosenAction = guardActions[choice];
         party = await applyAction(party, chosenAction, rl);
@@ -368,7 +308,7 @@ async function handleGuardStep(currentPartyState, rl, isDebug, engine) {
  * @param {readline.Interface} rl - The readline interface for user input.
  * @returns {Promise<Party>} The new game state after the battle phase.
  */
-async function handleBattlePhase(currentPartyState, rl, isDebug, engine) {
+async function handleBattlePhase(currentPartyState, rl) {
     let party = currentPartyState;
     const playerIndex = party.currentPlayerIndex;
 
@@ -378,14 +318,14 @@ async function handleBattlePhase(currentPartyState, rl, isDebug, engine) {
 
         const battleActions = getPossibleActions(party);
 
-        const choice = await getPlayerChoice(party, rl, battleActions, isDebug, (action, index) => {
+        const choice = await getPlayerChoice(party, rl, battleActions, (action, index) => {
             if (action.type === 'ATTACK') {
                 const boostText = action.boost ? ' (with Boost)' : '';
                 return `Attack with ${action.attacker.name} targeting ${action.target.name}${boostText}`;
             } else if (action.type === 'PASS_BATTLE_PHASE') {
                 return `End Battle Phase`;
             }
-        }, engine);
+        });
 
         const chosenAction = battleActions[choice];
 
@@ -400,12 +340,12 @@ async function handleBattlePhase(currentPartyState, rl, isDebug, engine) {
     return party;
 }
 
-async function handleEffectResolutionPhase(currentPartyState, rl, isDebug, engine) {
+async function handleEffectResolutionPhase(currentPartyState, rl) {
     console.log(`\n--- EFFECT RESOLUTION ---`);
     const effectActions = getPossibleActions(currentPartyState);
-    const choice = await getPlayerChoice(currentPartyState, rl, effectActions, isDebug, (action, index) => {
+    const choice = await getPlayerChoice(currentPartyState, rl, effectActions, (action, index) => {
         return action.description;
-    }, engine);
+    });
     const chosenAction = effectActions[choice];
     return await applyAction(currentPartyState, chosenAction, rl);
 }
@@ -457,7 +397,6 @@ async function main() {
 
     try {
         const [deck1Path, deck2Path] = args;
-        const isDebug = args.includes('debug');
 
         const deck1Content = fs.readFileSync(deck1Path, 'utf-8');
         const deck2Content = fs.readFileSync(deck2Path, 'utf-8');
@@ -468,16 +407,15 @@ async function main() {
 
         let party = new Party(deck1, deck2);
         party.startGame();
-        let engine = new EvaluationEngine(party);
 
         // Player 1 Mulligan
         if (party.phase === 'mulligan') {
-            party = await handleMulliganPhase(party, rl, isDebug, engine);
+            party = await handleMulliganPhase(party, rl);
         }
 
         // Player 2 Mulligan
         if (party.phase === 'mulligan') {
-            party = await handleMulliganPhase(party, rl, isDebug, engine);
+            party = await handleMulliganPhase(party, rl);
         }
 
         console.log('\n--- Mulligan Phase Complete ---');
@@ -499,24 +437,24 @@ async function main() {
                         party = handleDrawPhase(party);
                         break;
                     case 'ride':
-                        party = await handleRidePhase(party, rl, isDebug, engine);
+                        party = await handleRidePhase(party, rl);
                         break;
                     case 'main':
-                        party = await handleMainPhase(party, rl, isDebug, engine);
+                        party = await handleMainPhase(party, rl);
                         break;
                     case 'battle':
                         if (party.turn === 1) {
                             console.log('\n--- Battle Phase is skipped on Turn 1 ---');
                             party.phase = 'end';
                         } else {
-                            party = await handleBattlePhase(party, rl, isDebug, engine);
+                            party = await handleBattlePhase(party, rl);
                         }
                         break;
                     case 'guard':
-                        party = await handleGuardStep(party, rl, isDebug, engine);
+                        party = await handleGuardStep(party, rl);
                         break;
                     case 'effect_resolution':
-                        party = await handleEffectResolutionPhase(party, rl, isDebug, engine);
+                        party = await handleEffectResolutionPhase(party, rl);
                         break;
                     case 'drive_check': {
                         const { attackerCircle } = party.currentBattle;

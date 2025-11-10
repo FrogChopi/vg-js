@@ -65,9 +65,9 @@ function applyCall(gameState, action) {
     const newGameState = cloneDeep(gameState);
     const activePlayer = newGameState.players[newGameState.currentPlayerIndex];
 
-    const cardIndex = activePlayer.hand.findIndex(c => c.uniqueId === action.cardInstanceId);
-    if (cardIndex === -1) {
-        console.error(`ActionApplier Error: Card with instance id ${action.cardInstanceId} not found in hand for CALL.`);
+    const cardIndex = action.cardIndexInHand;
+    if (cardIndex < 0 || cardIndex >= activePlayer.hand.length) {
+        console.error(`ActionApplier Error: Card with index ${action.cardIndexInHand} not found in hand for CALL.`);
         return gameState; // Return original state on error
     }
 
@@ -393,15 +393,26 @@ function collectEffectsForEvent(event, party) {
 async function applyActivateEffect(gameState, action, rl) {
     const newGameState = cloneDeep(gameState);
     const { effectToActivate } = action;
+    const currentEvent = newGameState.eventQueue[0];
+
+    // Find the original full pending effect object using the simplified info from the action.
+    // This is necessary to retrieve the eventPayload and cardName.
+    const originalPendingEffect = currentEvent?.pendingEffects.find(p =>
+        p.cardId === effectToActivate.cardId && p.effect.function_index === effectToActivate.effect.function_index
+    );
+
+    if (!originalPendingEffect) {
+        console.error('ActionApplier Error: Could not find the original pending effect to activate.');
+        return gameState;
+    }
 
     const effectFunction = effectLibrary[effectToActivate.effect.function_index];
     if (effectFunction) {
-        if (rl) console.log(`> Activating effect of ${effectToActivate.cardName}`);
-        await effectFunction(newGameState, effectToActivate.eventPayload, rl);
+        if (rl) console.log(`> Activating effect of ${originalPendingEffect.cardName}`);
+        await effectFunction(newGameState, originalPendingEffect.eventPayload, rl);
     }
 
     // Remove the activated effect from the pending list for the current event
-    const currentEvent = newGameState.eventQueue[0];
     if (currentEvent && currentEvent.pendingEffects) {
         const indexToRemove = currentEvent.pendingEffects.findIndex(p => 
             p.cardId === effectToActivate.cardId && p.effect.function_index === effectToActivate.effect.function_index
@@ -450,12 +461,12 @@ async function processEvents(gameState, rl) {
             // Auto-resolve the first mandatory effect
             const effectToResolve = mandatoryEffects[0];
             if (rl) console.log(`> Auto-activating mandatory effect of ${effectToResolve.cardName}`);
-            
-            const effectFunction = effectLibrary[effectToResolve.effect.function_index];
-            await effectFunction(party, effectToResolve.eventPayload, rl);
 
-            // Remove from pending and loop to re-evaluate the queue (in case the effect added new events)
+            const effectFunction = effectLibrary[effectToResolve.effect.function_index];
+            // Remove from pending BEFORE applying, to prevent infinite loops if the effect adds new events.
             currentEvent.pendingEffects.splice(currentEvent.pendingEffects.indexOf(effectToResolve), 1);
+
+            await effectFunction(party, effectToResolve.eventPayload, rl);
             continue;
         }
 
@@ -499,13 +510,16 @@ export async function applyAction(gameState, action, rl) {
         case 'CALL':
             return applyCall(gameState, action);
         case 'ACT':
-            return await applyAct(gameState, action, rl);
+            newGameState = await applyAct(gameState, action, rl);
+            break;
         case 'ACTIVATE_EFFECT':
-            return await applyActivateEffect(gameState, action, rl);
+            newGameState = await applyActivateEffect(gameState, action, rl);
+            break;
         case 'MOVE':
             return applyMove(gameState, action);
         case 'ATTACK':
-            return await applyAttack(gameState, action, rl);
+            newGameState = await applyAttack(gameState, action, rl);
+            break;
         case 'GUARD':
             return applyGuard(gameState, action, rl);
         case 'INTERCEPT':
@@ -543,7 +557,11 @@ export async function applyAction(gameState, action, rl) {
             break;
     }
 
-    if (postActionPhase) {
+    // If an action resulted in a state that needs event processing, do it now.
+    // This is crucial for effect resolution loops.
+    if (action.type === 'ACTIVATE_EFFECT' || action.type === 'PASS_EFFECT') {
+        return await processEvents(newGameState, rl);
+    } else if (postActionPhase) {
         newGameState.nextPhase = postActionPhase;
         return await processEvents(newGameState, rl);
     }
