@@ -16,7 +16,9 @@ async function onRideIfSecondDraw(party, eventPayload, rl) {
     const playerIndex = party.currentPlayerIndex;
 
     console.log(`> Effect of "${riddedCard.name}" resolved: Player ${playerIndex + 1} draws a card.`);
-    party.draw(playerIndex, 1);
+    const [drawnCard] = party.draw(playerIndex, 1);
+    // This draw is public knowledge
+    if (drawnCard) drawnCard.isPublic = true;
 }
 
 /**
@@ -68,9 +70,11 @@ async function onRidePhaseStartEnergyCrest(party, eventPayload, rl) {
 async function onActEnergyCrest(party, eventPayload, rl) {
     const playerIndex = party.currentPlayerIndex;
     party.players[playerIndex].energy -= 7;
-    console.log(`> Paid cost: Energy Blast 7. Remaining energy: ${party.players[playerIndex].energy}`);
-    party.draw(playerIndex, 1);
-    console.log('> Drew 1 card.');
+    if (rl) console.log(`> Paid cost: Energy Blast 7. Remaining energy: ${party.players[playerIndex].energy}`);
+    const [drawnCard] = party.draw(playerIndex, 1);
+    // This draw is public knowledge
+    if (drawnCard) drawnCard.isPublic = true;
+    if (rl) console.log('> Drew 1 card.');
 }
 
 export const effects = [onRideIfSecondDraw, onRideEnergyCrest, onRidePhaseStartEnergyCrest, onActEnergyCrest];

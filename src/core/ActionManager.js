@@ -4,8 +4,8 @@
  * The core idea is to have pure functions that take a state and return a list of
  * possible next actions, without modifying the original state.
  */
-import { evaluateCondition } from './ConditionEvaluator.js';
 
+import { evaluateCondition } from './ConditionEvaluator.js';
 /**
  * Generates all possible "call" actions from the hand to the board.
  * @param {object} gameState - The current state of the game.
@@ -33,7 +33,7 @@ function getCallActions(gameState, activePlayer) {
             for (const circle of availableCircles) {
                 actions.push({
                     type: 'CALL',
-                    cardId: card.id,
+                    cardInstanceId: card.uniqueId,
                     cardName: `[G${card.grade}] ${card.name}`, // For clearer display
                     circleTag: circle.name
                 });
@@ -129,7 +129,7 @@ function getGuardActions(gameState) {
         if (typeof card.shield === 'number') {
             actions.push({
                 type: 'GUARD',
-                cardId: card.id,
+                cardInstanceId: card.uniqueId,
                 cardName: `[G${card.grade}] ${card.name}`,
                 shield: card.shield
             });
@@ -141,7 +141,7 @@ function getGuardActions(gameState) {
     for (const circle of interceptors) {
         actions.push({
             type: 'INTERCEPT',
-            cardId: circle.unit.id,
+            cardInstanceId: circle.unit.uniqueId,
             cardName: `[G${circle.unit.grade}] ${circle.unit.name}`,
             shield: circle.unit.shield,
             fromCircle: circle.name
@@ -250,16 +250,16 @@ function getMulliganActions(gameState, activePlayer) {
     // Generate all combinations of keeping/redrawing cards
     // Each bit in 'i' represents a card: 0 = keep, 1 = redraw
     for (let i = 0; i < Math.pow(2, handSize); i++) {
-        const cardIdsToRedraw = [];
+        const cardIndicesToRedraw = [];
         for (let j = 0; j < handSize; j++) {
             // If the j-th bit is set, redraw the j-th card
             if ((i >> j) & 1) {
-                cardIdsToRedraw.push(activePlayer.hand[j].id);
+                cardIndicesToRedraw.push(j);
             }
         }
         actions.push({
             type: 'MULLIGAN',
-            cardIdsToRedraw: cardIdsToRedraw
+            cardIndicesToRedraw: cardIndicesToRedraw
         });
     }
 
@@ -277,39 +277,76 @@ function getRideActions(gameState, activePlayer) {
     const currentVanguard = activePlayer.board.getCircle('V').unit;
     const currentVanguardGrade = currentVanguard ? currentVanguard.grade : -1; // -1 if no vanguard yet (e.g., first turn)
 
+    const seenActions = new Set();
+
     // Ride from hand
-    for (const card of activePlayer.hand) {
+    activePlayer.hand.forEach((card, index) => {
         // Can ride a unit with grade +1 or equal to current vanguard
         if (card.grade === currentVanguardGrade + 1 || card.grade === currentVanguardGrade) {
-            actions.push({
+            const action = {
                 type: 'RIDE',
-                cardId: `[G${card.grade}] ${card.name}`,
-                cardInstanceId: card.id,
+                cardName: `[G${card.grade}] ${card.name}`, // For display
+                cardId: card.id, // Use non-unique ID for stable matching
                 source: 'hand'
-            });
-        }
-    }
-
-    // Ride from ride deck (only if not already ridden from ride deck this turn, and ride deck is not empty)
-    // This requires discarding a card from hand.
-    if (activePlayer.rideDeck.length > 0) {
-        const rideDeckCard = activePlayer.rideDeck[0]; // Assuming top card of ride deck
-        if (rideDeckCard.grade === currentVanguardGrade + 1 || rideDeckCard.grade === currentVanguardGrade) {
-            // For each card in hand, create an option to ride by discarding it.
-            for (const cardToDiscard of activePlayer.hand) {
-                actions.push({
-                    type: 'RIDE',
-                    cardId: `[G${rideDeckCard.grade}] ${rideDeckCard.name}`,
-                    cardInstanceId: rideDeckCard.id,
-                    source: 'rideDeck',
-                    discardCardId: cardToDiscard.id
-                });
+            };
+            const key = JSON.stringify({ type: action.type, cardId: action.cardId, source: action.source });
+            if (!seenActions.has(key)) {
+                actions.push(action);
+                seenActions.add(key);
             }
         }
+    });
+
+    // Ride from ride deck
+    const rideDeckCardToRide = activePlayer.rideDeck.find(c => c.grade === currentVanguardGrade + 1);
+    if (rideDeckCardToRide) {
+        [...new Map(activePlayer.hand.map(card => [card.name, card])).values()].forEach(cardToDiscard => {
+            actions.push({
+                type: 'RIDE',
+                cardName: `[G${rideDeckCardToRide.grade}] ${rideDeckCardToRide.name}`, // For display
+                cardId: rideDeckCardToRide.id, // Use non-unique ID for the card to ride
+                source: 'rideDeck',
+                discardCardId: cardToDiscard.id // Use non-unique ID for stable matching
+            });
+        });
     }
 
     // Always possible to pass the ride phase
     actions.push({ type: 'PASS_RIDE_PHASE' });
+
+    return actions;
+}
+
+/**
+ * Generates actions for resolving optional card effects.
+ * @param {object} gameState - The current state of the game.
+ * @returns {object[]} A list of possible effect-related actions.
+ */
+function getEffectActions(gameState) {
+    const actions = [];
+    if (gameState.eventQueue.length === 0) return actions;
+
+    const currentEvent = gameState.eventQueue[0];
+    if (!currentEvent.pendingEffects) {
+        // This case should ideally not be hit if logic is correct, but as a fallback:
+        currentEvent.pendingEffects = collectEffectsForEvent(currentEvent, gameState);
+    }
+
+    const optionalEffects = currentEvent.pendingEffects.filter(p => !p.effect.mandatory);
+
+    for (const effectToActivate of optionalEffects) {
+        actions.push({
+            type: 'ACTIVATE_EFFECT',
+            effectToActivate: effectToActivate,
+            description: `Activate effect of ${effectToActivate.cardName}`
+        });
+    }
+
+    // It's always possible to not activate an optional effect.
+    actions.push({
+        type: 'PASS_EFFECT',
+        description: 'Do not activate an effect'
+    });
 
     return actions;
 }
@@ -337,6 +374,8 @@ export function getPossibleActions(gameState) {
             return getBattlePhaseActions(gameState);
         case 'guard':
             return getGuardActions(gameState);
+        case 'effect_resolution':
+            return getEffectActions(gameState);
         // Add cases for 'battle', etc.
         default:
             return [{ type: 'PASS' }]; // Default action if phase is unknown

@@ -1,5 +1,6 @@
 export default class Card {
     constructor({
+        uniqueId,
         id,
         name,
         grade,
@@ -14,6 +15,7 @@ export default class Card {
         clan,
         race
     } = {}, drive = 1) {
+        this.uniqueId = uniqueId; // Unique ID for each card instance
         this.id = id; // Unique ID for each card instance
         this.name = name;
         this.grade = grade;
@@ -32,5 +34,6 @@ export default class Card {
         this.isResting = false;
         this.bonusPower = 0;
         this.bonusCritical = 0;
+        this.isPublic = false; // Is this card known to the opponent?
     }
 }

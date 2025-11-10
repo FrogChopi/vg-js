@@ -1,41 +1,6 @@
-/**
- * Performs a deep clone of an object, preserving class instances and their methods.
- * This is a more robust deep clone than JSON.parse(JSON.stringify(obj)).
- *
- * @param {object} obj The object to clone.
- * @param {WeakMap} hash A WeakMap to store seen objects to prevent circular references.
- * @returns {object} The deep cloned object.
- */
-export default function cloneDeep(obj, hash = new WeakMap()) {
-    if (obj === null || typeof obj !== 'object') return obj;
-    if (hash.has(obj)) return hash.get(obj);
-
-    // Handle Date and RegExp objects
-    if (obj instanceof Date) return new Date(obj);
-    if (obj instanceof RegExp) return new RegExp(obj);
-
-    // Handle class instances
-    let clone;
-    if (obj.constructor !== Object && obj.constructor !== Array) {
-        // If it's a class instance, create a new instance of that class
-        // Create a new object with the same prototype, but without calling the constructor
-        clone = Object.create(Object.getPrototypeOf(obj));
-    } else {
-        // If it's a plain object or array, create a new plain object or array
-        clone = Array.isArray(obj) ? [] : {};
-    }
-
-    hash.set(obj, clone);
-
-    for (const key in obj) {
-        if (Object.prototype.hasOwnProperty.call(obj, key)) {
-            clone[key] = cloneDeep(obj[key], hash);
-        }
-    }
-
-    return clone;
-}
-
+import cloneDeep from './cloneDeep.js';
+import { effects as effectLibrary } from './EffectLibrary.js';
+import { evaluateCondition } from './ConditionEvaluator.js';
 
 /**
  * Applies a 'MULLIGAN' action to the game state.
@@ -51,15 +16,23 @@ function applyMulligan(gameState, action) {
     const cardsToRedraw = [];
 
     // Separate cards to keep and cards to redraw
-    for (const card of activePlayer.hand) {
-        if (action.cardIdsToRedraw.includes(card.id)) {
+    activePlayer.hand.forEach((card, index) => {
+        if (action.cardIndicesToRedraw.includes(index)) {
             cardsToRedraw.push(card);
         } else {
             cardsToKeep.push(card);
         }
-    }
+    });
 
     // Return redrawn cards to the deck
+    // Reset card state before putting them back in the deck
+    cardsToRedraw.forEach(card => {
+        card.isResting = false;
+        card.bonusPower = 0;
+        card.bonusCritical = 0;
+        card.isPublic = false;
+        // Potentially more properties to reset if they are added later
+    });
     activePlayer.deck.unshift(...cardsToRedraw); // Add to top of deck for shuffling
     activePlayer.hand = cardsToKeep;
 
@@ -92,9 +65,9 @@ function applyCall(gameState, action) {
     const newGameState = cloneDeep(gameState);
     const activePlayer = newGameState.players[newGameState.currentPlayerIndex];
 
-    const cardIndex = activePlayer.hand.findIndex(c => c.id === action.cardId);
+    const cardIndex = activePlayer.hand.findIndex(c => c.uniqueId === action.cardInstanceId);
     if (cardIndex === -1) {
-        console.error(`ActionApplier Error: Card with id ${action.cardId} not found in hand.`);
+        console.error(`ActionApplier Error: Card with instance id ${action.cardInstanceId} not found in hand for CALL.`);
         return gameState; // Return original state on error
     }
 
@@ -144,19 +117,19 @@ function applyMove(gameState, action) {
  * @param {object} action - The GUARD action object.
  * @returns {Party} The new game state after the action.
  */
-function applyGuard(gameState, action) {
+function applyGuard(gameState, action, rl) {
     const newGameState = cloneDeep(gameState);
     const defendingPlayer = newGameState.players[1 - newGameState.currentPlayerIndex];
 
-    const cardIndex = defendingPlayer.hand.findIndex(c => c.id === action.cardId);
+    const cardIndex = defendingPlayer.hand.findIndex(c => c.uniqueId === action.cardInstanceId);
     if (cardIndex === -1) {
-        console.error(`ActionApplier Error: Card with id ${action.cardId} not found in hand for GUARD.`);
+        console.error(`ActionApplier Error: Card with instance id ${action.cardInstanceId} not found in hand for GUARD.`);
         return gameState;
     }
 
     const [cardToGuard] = defendingPlayer.hand.splice(cardIndex, 1);
     defendingPlayer.guardianZone.push(cardToGuard);
-    console.log(`> Player ${1 - newGameState.currentPlayerIndex + 1} guards with ${cardToGuard.name}.`);
+    if (rl) console.log(`> Player ${1 - newGameState.currentPlayerIndex + 1} guards with ${cardToGuard.name}.`);
 
     return newGameState;
 }
@@ -167,13 +140,13 @@ function applyGuard(gameState, action) {
  * @param {object} action - The INTERCEPT action object.
  * @returns {Party} The new game state after the action.
  */
-function applyIntercept(gameState, action) {
+function applyIntercept(gameState, action, rl) {
     const newGameState = cloneDeep(gameState);
     const defendingPlayer = newGameState.players[1 - newGameState.currentPlayerIndex];
 
     const circle = defendingPlayer.board.getCircle(action.fromCircle);
-    if (!circle || !circle.unit || circle.unit.id !== action.cardId) {
-        console.error(`ActionApplier Error: Unit with id ${action.cardId} not found on circle ${action.fromCircle} for INTERCEPT.`);
+    if (!circle || !circle.unit || circle.unit.uniqueId !== action.cardInstanceId) {
+        console.error(`ActionApplier Error: Unit with instance id ${action.cardInstanceId} not found on circle ${action.fromCircle} for INTERCEPT.`);
         return gameState;
     }
 
@@ -181,7 +154,7 @@ function applyIntercept(gameState, action) {
     circle.unit = null; // Remove from board
     cardToIntercept.isResting = true; // Interceptors are moved to GC as rest
     defendingPlayer.guardianZone.push(cardToIntercept);
-    console.log(`> Player ${1 - newGameState.currentPlayerIndex + 1} intercepts with ${cardToIntercept.name}.`);
+    if (rl) console.log(`> Player ${1 - newGameState.currentPlayerIndex + 1} intercepts with ${cardToIntercept.name}.`);
 
     return newGameState;
 }
@@ -210,7 +183,7 @@ async function applyAct(gameState, action, rl) {
 
     // Execute the effect function
     const effectFunction = effectLibrary[effect.function_index];
-    await effectFunction(newGameState, {}, rl);
+    if (effectFunction) await effectFunction(newGameState, {}, rl);
 
     return newGameState;
 }
@@ -246,7 +219,7 @@ async function applyAttack(gameState, action, rl) {
         if (boosterCircle?.unit) {
             boosterCircle.unit.isResting = true;
             attackerPower += (boosterCircle.unit.power + boosterCircle.unit.bonusPower);
-            console.log(`> ${boosterCircle.unit.name} boosts ${attackerCircle.unit.name}! New power: ${attackerPower}`);
+            if (rl) console.log(`> ${boosterCircle.unit.name} boosts ${attackerCircle.unit.name}! New power: ${attackerPower}`);
         }
     }
 
@@ -277,21 +250,21 @@ async function applyCloseStep(gameState, rl) {
     const totalShield = opponentPlayer.guardianZone.reduce((sum, card) => sum + (card.shield || 0), 0);
     const targetPower = targetCircle.unit.power + targetCircle.unit.bonusPower + totalShield;
 
-    console.log(`> Resolving attack: Attacker power ${attackerPower} vs Target power ${targetPower}`);
+    if (rl) console.log(`> Resolving attack: Attacker power ${attackerPower} vs Target power ${targetPower}`);
 
     if (attackerPower >= targetPower) {
-        console.log('> Attack Hits!');
+        if (rl) console.log('> Attack Hits!');
         if (targetCircle.name === 'V') {
             const damage = attackerCircle.unit.critical + attackerCircle.unit.bonusCritical;
-            console.log(`> Vanguard takes ${damage} damage.`);
-            await newGameState.damageCheck(1 - newGameState.currentPlayerIndex, damage, rl);
+            if (rl) console.log(`> Vanguard takes ${damage} damage.`);
+            if (rl) await newGameState.damageCheck(1 - newGameState.currentPlayerIndex, damage, rl);
         } else {
-            console.log(`> Rear-guard ${targetCircle.unit.name} is retired.`);
+            if (rl) console.log(`> Rear-guard ${targetCircle.unit.name} is retired.`);
             opponentPlayer.dropZone.push(targetCircle.unit);
             targetCircle.unit = null;
         }
     } else {
-        console.log('> Attack does not hit.');
+        if (rl) console.log('> Attack does not hit.');
     }
 
     // End of battle: move guardians to drop zone
@@ -324,16 +297,16 @@ function applyRide(gameState, action) {
 
     let cardToRide;
     if (action.source === 'hand') {
-        const cardIndex = activePlayer.hand.findIndex(c => c.id === action.cardInstanceId);
+        const cardIndex = activePlayer.hand.findIndex(c => c.id === action.cardId);
         if (cardIndex === -1) {
-            console.error(`ActionApplier Error: Card with id ${action.cardInstanceId} not found in hand for RIDE.`);
+            console.error(`ActionApplier Error: Card with id ${action.cardId} not found in hand for RIDE.`);
             return gameState;
         }
         [cardToRide] = activePlayer.hand.splice(cardIndex, 1);
     } else if (action.source === 'rideDeck') {
-        const cardIndex = activePlayer.rideDeck.findIndex(c => c.id === action.cardInstanceId);
+        const cardIndex = activePlayer.rideDeck.findIndex(c => c.id === action.cardId);
         if (cardIndex === -1) {
-            console.error(`ActionApplier Error: Card with id ${action.cardInstanceId} not found in ride deck for RIDE.`);
+            console.error(`ActionApplier Error: Card with id ${action.cardId} not found in ride deck for RIDE.`);
             return gameState;
         }
         [cardToRide] = activePlayer.rideDeck.splice(cardIndex, 1);
@@ -363,7 +336,9 @@ function applyRide(gameState, action) {
     }
     vanguardCircle.unit = cardToRide; // Place new card as vanguard
 
-    newGameState.phase = 'main'; // Transition to main phase after ride
+    // The next phase will be determined by the event processor after handling ON_RIDE.
+    // We set it here, and processEvents will use it after the queue is clear.
+    newGameState.nextPhase = 'main'; 
     return newGameState;
 }
 
@@ -374,9 +349,131 @@ function applyRide(gameState, action) {
  */
 function applyPassRidePhase(gameState) {
     const newGameState = cloneDeep(gameState);
-    newGameState.phase = 'main'; // Transition to main phase
     return newGameState;
 }
+
+function collectEffectsForEvent(event, party) {
+    const pendingEffects = [];
+    const eventTriggerName = event.type.toLowerCase();
+
+    // Collect cards from all relevant zones for both players
+    const allCardsInPlay = [];
+    for (let i = 0; i < party.players.length; i++) {
+        const player = party.players[i];
+        allCardsInPlay.push(
+            ...player.board.frontRow.map(c => ({ card: c.unit, zone: 'board', ownerIndex: i })),
+            ...player.board.backRow.map(c => ({ card: c.unit, zone: 'board', ownerIndex: i })),
+            ...player.rideDeck.map(c => ({ card: c, zone: 'rideDeck', ownerIndex: i })),
+            ...player.crestZone.map(c => ({ card: c, zone: 'crestZone', ownerIndex: i })),
+            ...player.soul.map(c => ({ card: c, zone: 'soul', ownerIndex: i }))
+        );
+    }
+
+    for (const { card, zone, ownerIndex } of allCardsInPlay.filter(item => item.card)) {
+        if (card.effectsData?.implemented_effects) {
+            for (const effect of card.effectsData.implemented_effects) {
+                if (effect.trigger !== eventTriggerName) continue;
+                if (effect.zone && effect.zone !== zone) continue;
+                // For now, assume effects only trigger for their owner.
+                if (ownerIndex !== party.currentPlayerIndex) continue;
+                if (!evaluateCondition(effect.condition, party)) continue;
+
+                pendingEffects.push({
+                    cardName: card.name,
+                    cardId: card.id, // Using non-unique ID for effect definition matching
+                    effect: effect,
+                    eventPayload: event
+                });
+            }
+        }
+    }
+    return pendingEffects;
+}
+
+async function applyActivateEffect(gameState, action, rl) {
+    const newGameState = cloneDeep(gameState);
+    const { effectToActivate } = action;
+
+    const effectFunction = effectLibrary[effectToActivate.effect.function_index];
+    if (effectFunction) {
+        if (rl) console.log(`> Activating effect of ${effectToActivate.cardName}`);
+        await effectFunction(newGameState, effectToActivate.eventPayload, rl);
+    }
+
+    // Remove the activated effect from the pending list for the current event
+    const currentEvent = newGameState.eventQueue[0];
+    if (currentEvent && currentEvent.pendingEffects) {
+        const indexToRemove = currentEvent.pendingEffects.findIndex(p => 
+            p.cardId === effectToActivate.cardId && p.effect.function_index === effectToActivate.effect.function_index
+        );
+        if (indexToRemove > -1) {
+            currentEvent.pendingEffects.splice(indexToRemove, 1);
+        }
+    }
+
+    return newGameState;
+}
+
+function applyPassEffect(gameState, action) {
+    const newGameState = cloneDeep(gameState);
+    const currentEvent = newGameState.eventQueue[0];
+
+    if (currentEvent && currentEvent.pendingEffects) {
+        // Passing means we clear all OPTIONAL effects for the current event.
+        // Mandatory ones must be resolved.
+        currentEvent.pendingEffects = currentEvent.pendingEffects.filter(p => p.effect.mandatory);
+    }
+    
+    return newGameState;
+}
+
+/**
+ * After an action, this function checks the event queue and resolves any mandatory effects
+ * or sets the phase to 'effect_resolution' if there are optional effects.
+ * @param {Party} gameState 
+ * @param {*} rl 
+ */
+async function processEvents(gameState, rl) {
+    let party = gameState;
+    while (party.eventQueue.length > 0) {
+        const currentEvent = party.eventQueue[0];
+        
+        // If pending effects for this event haven't been collected, collect them.
+        if (!currentEvent.pendingEffects) {
+            currentEvent.pendingEffects = collectEffectsForEvent(currentEvent, party);
+        }
+
+        const mandatoryEffects = currentEvent.pendingEffects.filter(p => p.effect.mandatory);
+        const optionalEffects = currentEvent.pendingEffects.filter(p => !p.effect.mandatory);
+
+        if (mandatoryEffects.length > 0) {
+            // Auto-resolve the first mandatory effect
+            const effectToResolve = mandatoryEffects[0];
+            if (rl) console.log(`> Auto-activating mandatory effect of ${effectToResolve.cardName}`);
+            
+            const effectFunction = effectLibrary[effectToResolve.effect.function_index];
+            await effectFunction(party, effectToResolve.eventPayload, rl);
+
+            // Remove from pending and loop to re-evaluate the queue (in case the effect added new events)
+            currentEvent.pendingEffects.splice(currentEvent.pendingEffects.indexOf(effectToResolve), 1);
+            continue;
+        }
+
+        if (optionalEffects.length > 0) {
+            // There are choices to be made, so we enter the effect resolution phase and wait for player/AI input.
+            party.phase = 'effect_resolution';
+            return party;
+        }
+
+        // If there are no more pending effects for this event, remove the event and check the next one.
+        party.eventQueue.shift();
+    }
+
+    // If the queue is empty, we can proceed to the phase that was set before event processing.
+    party.phase = party.nextPhase || 'main';
+    return party;
+}
+
 
 /**
  * Main dispatcher function to apply an action to the game state.
@@ -385,48 +482,73 @@ function applyPassRidePhase(gameState) {
  * @returns {Party} The new game state.
  */
 export async function applyAction(gameState, action, rl) {
+    let newGameState;
+    let postActionPhase = null; // The phase to go to after the action and its events are resolved.
+
     switch (action.type) {
         case 'MULLIGAN':
             return applyMulligan(gameState, action);
         case 'RIDE':
-            return applyRide(gameState, action);
+            newGameState = applyRide(gameState, action);
+            postActionPhase = 'main';
+            break;
         case 'PASS_RIDE_PHASE':
-            return applyPassRidePhase(gameState);
+            newGameState = applyPassRidePhase(gameState);
+            postActionPhase = 'main';
+            break;
         case 'CALL':
             return applyCall(gameState, action);
         case 'ACT':
             return await applyAct(gameState, action, rl);
+        case 'ACTIVATE_EFFECT':
+            return await applyActivateEffect(gameState, action, rl);
         case 'MOVE':
             return applyMove(gameState, action);
         case 'ATTACK':
             return await applyAttack(gameState, action, rl);
         case 'GUARD':
-            return applyGuard(gameState, action);
+            return applyGuard(gameState, action, rl);
         case 'INTERCEPT':
-            return applyIntercept(gameState, action);
-        
+            return applyIntercept(gameState, action, rl);
+        case 'PASS_EFFECT':
+            return applyPassEffect(gameState, action);
         case 'PASS_MAIN_PHASE': {
-            const newGameState = cloneDeep(gameState);
-            newGameState.phase = 'battle'; // Transition to the next phase
-            return newGameState;
+            newGameState = cloneDeep(gameState);
+            postActionPhase = 'battle';
+            break;
         }
 
         case 'PASS_BATTLE_PHASE': {
-            const newGameState = cloneDeep(gameState);
-            newGameState.phase = 'end'; // Transition to the next phase
-            return newGameState;
+            newGameState = cloneDeep(gameState);
+            postActionPhase = 'end';
+            break;
         }
 
         case 'PASS_GUARD_STEP': {
-            const newGameState = cloneDeep(gameState);
-            newGameState.phase = 'drive_check'; // Transition to the drive check step
-            return newGameState;
+            newGameState = cloneDeep(gameState);
+            postActionPhase = 'drive_check';
+            break;
+        }
+
+        case 'PROCESS_EVENTS': {
+            newGameState = cloneDeep(gameState);
+            break;
         }
 
         default:
-            console.warn(`Action type "${action.type}" has no applier logic yet.`);
-            return gameState; // Return original state if action is unknown
+            if (action.type !== 'PASS') {
+                console.warn(`Action type "${action.type}" has no applier logic yet.`);
+            }
+            newGameState = cloneDeep(gameState);
+            break;
     }
+
+    if (postActionPhase) {
+        newGameState.nextPhase = postActionPhase;
+        return await processEvents(newGameState, rl);
+    }
+
+    return newGameState;
 }
 
 export { applyCloseStep };
